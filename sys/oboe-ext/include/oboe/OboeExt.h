@@ -4,6 +4,8 @@
 #include "oboe/Oboe.h"
 
 namespace oboe {
+  typedef void (*DropContextHandler)(void *context);
+
   typedef DataCallbackResult (*AudioReadyHandler)(void *context,
                                                   AudioStream *oboeStream,
                                                   void *audioData,
@@ -13,13 +15,16 @@ namespace oboe {
                                     AudioStream *oboeStream,
                                     Result error);
 
-  class AudioStreamCallbackWrapper: public AudioStreamCallback {
+  class AudioStreamCallbackWrapper
+      : public AudioStreamDataCallback, public AudioStreamErrorCallback {
   public:
-    AudioStreamCallbackWrapper(const AudioReadyHandler audio_ready,
+    AudioStreamCallbackWrapper(void *context,
+                               const DropContextHandler drop_context,
+                               const AudioReadyHandler audio_ready,
                                const ErrorCloseHandler before_close,
                                const ErrorCloseHandler after_close);
 
-    void setContext(void *context);
+    ~AudioStreamCallbackWrapper();
 
     DataCallbackResult onAudioReady(AudioStream *oboeStream,
                                     void *audioData,
@@ -33,35 +38,32 @@ namespace oboe {
 
   private:
     void *_context;
+    const DropContextHandler _drop_context;
     const AudioReadyHandler _audio_ready;
     const ErrorCloseHandler _before_close;
     const ErrorCloseHandler _after_close;
   };
 
-  /*void AudioStreamCallbackWrapper_init(AudioStreamCallbackWrapper *callback,
-                                       const AudioReadyHandler audio_ready,
-                                       const ErrorCloseHandler before_close,
-                                       const ErrorCloseHandler after_close);
-  void AudioStreamCallbackWrapper_drop(AudioStreamCallbackWrapper *callback);*/
-
-  AudioStreamCallbackWrapper *
-  AudioStreamCallbackWrapper_new(const AudioReadyHandler audio_ready,
-                                 const ErrorCloseHandler before_close,
-                                 const ErrorCloseHandler after_close);
-  void AudioStreamCallbackWrapper_delete(AudioStreamCallbackWrapper *callback);
-
-  //void AudioStreamBuilder_init(AudioStreamBuilder *builder);
-  //void AudioStreamBuilder_drop(AudioStreamBuilder *builder);
   AudioStreamBuilder *AudioStreamBuilder_new();
   void AudioStreamBuilder_delete(AudioStreamBuilder *builder);
   void AudioStreamBuilder_setCallback(AudioStreamBuilder *builder,
-                                      AudioStreamCallbackWrapper *callback);
+                                      void *context,
+                                      const DropContextHandler drop_context,
+                                      const AudioReadyHandler audio_ready,
+                                      const ErrorCloseHandler before_close,
+                                      const ErrorCloseHandler after_close);
+
   AudioApi AudioStreamBuilder_getAudioApi(const AudioStreamBuilder *builder);
   void AudioStreamBuilder_setAudioApi(AudioStreamBuilder *builder, AudioApi api);
   AudioStreamBase* AudioStreamBuilder_getBase(AudioStreamBuilder *builder);
-
+  Result AudioStreamBuilder_openStreamShared(AudioStreamBuilder *builder,
+                                             AudioStream **stream,
+                                             void **shared_ptr);
+  
   void AudioStream_delete(AudioStream *oboeStream);
+  void AudioStream_deleteShared(void *shared_ptr);
   Result AudioStream_open(AudioStream *oboeStream);
+  Result AudioStream_close(AudioStream *oboeStream);
   Result AudioStream_requestStart(AudioStream *oboeStream);
   Result AudioStream_requestPause(AudioStream *oboeStream);
   Result AudioStream_requestFlush(AudioStream *oboeStream);

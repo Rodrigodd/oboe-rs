@@ -10,10 +10,9 @@ use std::{
 };
 
 use super::{
-    audio_stream_base_fmt, wrap_result, wrap_status, AudioApi, AudioCallbackWrapper,
-    AudioStreamBase, FrameTimestamp, Input, IsFrameType, Output, RawAudioInputStream,
-    RawAudioOutputStream, RawAudioStream, RawAudioStreamBase, Result, Status, StreamState,
-    NANOS_PER_MILLISECOND,
+    audio_stream_base_fmt, wrap_result, wrap_status, AudioApi, AudioStreamBase, FrameTimestamp,
+    Input, IsFrameType, Output, RawAudioInputStream, RawAudioOutputStream, RawAudioStream,
+    RawAudioStreamBase, Result, Status, StreamState, NANOS_PER_MILLISECOND,
 };
 
 /**
@@ -411,9 +410,7 @@ impl<T: RawAudioStream + RawAudioStreamBase> AudioStream for T {
     }
 
     fn close(&mut self) -> Status {
-        wrap_status(unsafe {
-            ffi::oboe_AudioStream_close(self._raw_stream_mut() as *mut _ as *mut c_void)
-        })
+        wrap_status(unsafe { ffi::oboe_AudioStream_close1(self._raw_stream_mut()) })
     }
 
     fn start_with_timeout(&mut self, timeout_nanoseconds: i64) -> Status {
@@ -537,24 +534,30 @@ pub(crate) fn audio_stream_fmt<T: AudioStreamSafe>(
     '\n'.fmt(f)
 }
 
-#[repr(transparent)]
-struct AudioStreamHandle(*mut ffi::oboe_AudioStream);
+struct AudioStreamHandle(*mut ffi::oboe_AudioStream, *mut c_void);
 
-impl From<*mut ffi::oboe_AudioStream> for AudioStreamHandle {
-    fn from(raw: *mut ffi::oboe_AudioStream) -> Self {
-        Self(raw)
+impl AudioStreamHandle {
+    fn new(raw: *mut ffi::oboe_AudioStream, shared_ptr: *mut c_void) -> Self {
+        Self(raw, shared_ptr)
+    }
+
+    /// SAFETY: `self.0` and `self.1` must be valid pointers.
+    pub(crate) unsafe fn delete(&mut self) {
+        assert!(!self.0.is_null());
+        assert!(!self.1.is_null());
+
+        // The error callback could be holding a shared_ptr, so don't delete AudioStream
+        // directly, but only its shared_ptr.
+        ffi::oboe_AudioStream_deleteShared(self.1);
+
+        self.0 = null_mut();
+        self.1 = null_mut();
     }
 }
 
 impl Default for AudioStreamHandle {
     fn default() -> Self {
-        Self(null_mut())
-    }
-}
-
-impl Drop for AudioStreamHandle {
-    fn drop(&mut self) {
-        unsafe { ffi::oboe_AudioStream_delete(self.0) }
+        Self(null_mut(), null_mut())
     }
 }
 
@@ -625,10 +628,7 @@ impl<'s> RawAudioOutputStream for AudioStreamRef<'s, Output> {}
  */
 pub struct AudioStreamAsync<D, F> {
     raw: AudioStreamHandle,
-
-    // Needed to keep callback alive
-    #[allow(dead_code)]
-    callback: AudioCallbackWrapper<D, F>,
+    _phantom: PhantomData<(D, F)>,
 }
 
 impl<D, F> fmt::Debug for AudioStreamAsync<D, F> {
@@ -638,13 +638,25 @@ impl<D, F> fmt::Debug for AudioStreamAsync<D, F> {
 }
 
 impl<D, F> AudioStreamAsync<D, F> {
-    pub(crate) fn wrap_raw(
+    // SAFETY: `raw` and `shared_ptr` must be valid.
+    pub(crate) unsafe fn wrap_raw(
         raw: *mut ffi::oboe_AudioStream,
-        callback: AudioCallbackWrapper<D, F>,
+        shared_ptr: *mut c_void,
     ) -> Self {
         Self {
-            raw: raw.into(),
-            callback,
+            raw: AudioStreamHandle(raw, shared_ptr),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<D, F> Drop for AudioStreamAsync<D, F> {
+    fn drop(&mut self) {
+        // SAFETY: As long as the conditions on Self::wrap_raw are guaranteed on the creation of
+        // self, this is safe.
+        unsafe {
+            let _ = self.close();
+            self.raw.delete();
         }
     }
 }
@@ -688,10 +700,25 @@ impl<D, F> fmt::Debug for AudioStreamSync<D, F> {
 }
 
 impl<D, F> AudioStreamSync<D, F> {
-    pub(crate) fn wrap_raw(raw: *mut ffi::oboe_AudioStream) -> Self {
+    // SAFETY: `raw`, `shared_ptr` must be valid, because they will be deleted on drop.
+    pub(crate) unsafe fn wrap_raw(
+        raw: *mut ffi::oboe_AudioStream,
+        shared_ptr: *mut c_void,
+    ) -> Self {
         Self {
-            raw: raw.into(),
+            raw: AudioStreamHandle::new(raw, shared_ptr),
             _phantom: PhantomData,
+        }
+    }
+}
+
+impl<D, F> Drop for AudioStreamSync<D, F> {
+    fn drop(&mut self) {
+        // SAFETY: As long as the conditions on Self::wrap_raw are guaranteed on the creation of
+        // self, this is safe.
+        unsafe {
+            let _ = self.close();
+            self.raw.delete();
         }
     }
 }
